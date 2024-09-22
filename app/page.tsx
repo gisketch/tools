@@ -65,7 +65,9 @@ export default function Home() {
               className="w-full h-48 object-cover"
             />
             <CardHeader>
-              <CardTitle className="text-white">Who's That Pokémon?</CardTitle>
+              <CardTitle className="text-white">
+                Who&apos;s That Pokémon?
+              </CardTitle>
               <CardDescription className="text-gray-400">
                 Pokémon guessing game
               </CardDescription>
