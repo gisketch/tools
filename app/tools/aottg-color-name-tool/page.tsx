@@ -12,6 +12,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { HexColorPicker } from "react-colorful";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { InfoIcon } from "lucide-react";
 
 export default function ColorNameTool() {
   const [text, setText] = useState("");
@@ -137,6 +139,14 @@ export default function ColorNameTool() {
             className="mt-1"
           />
         </div>
+        <Alert>
+          <InfoIcon className="h-4 w-4" />
+          <AlertTitle>How to use</AlertTitle>
+          <AlertDescription>
+            Select/Highlight the text you want to color before clicking
+            &quot;Apply Color&quot; or &quot;Apply Gradient&quot;.
+          </AlertDescription>
+        </Alert>
         <Tabs defaultValue="solid" className="w-full">
           <TabsList>
             <TabsTrigger value="solid">Solid Color</TabsTrigger>

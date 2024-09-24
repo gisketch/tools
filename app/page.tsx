@@ -14,7 +14,7 @@ export default function Home() {
     <div className="container mx-auto px-4 py-8">
       <header className="text-center mb-12">
         <h1 className="text-4xl font-bold text-white mb-2">
-          Tools by Gisketch
+          Tools by gisketch
         </h1>
         <p className="text-xl text-gray-400">
           Useful utilities for gamers and developers
