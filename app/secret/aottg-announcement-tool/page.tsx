@@ -64,6 +64,10 @@ export default function AutoPost() {
   };
 
   useEffect(() => {
+    document.title = "AoTTG 2 Announcement Tool";
+  }, []);
+
+  useEffect(() => {
     if (isAuthenticated) {
       fetchFiles();
       setDefaultVersion();
