@@ -14,7 +14,11 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
+  DialogFooter,
 } from "@/components/ui/dialog";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Trash2, Plus, X } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 const MDEditor = dynamic(() => import("@uiw/react-md-editor"), { ssr: false });
 const MarkdownPreview = dynamic(() => import("@uiw/react-markdown-preview"), {
@@ -37,6 +41,19 @@ const formatTextAreaContent = (content: string) => {
     : "None";
 };
 
+const sanitizeFileName = (fileName: string) => {
+  return fileName
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+};
+
+type QueueItem = {
+  type: "new" | "delete";
+  path: string;
+  content?: string;
+};
+
 export default function AutoPost() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authPassword, setAuthPassword] = useState("");
@@ -48,10 +65,25 @@ export default function AutoPost() {
   const [changelogDescription, setChangelogDescription] = useState("");
   const [files, setFiles] = useState<string[]>([]);
   const [environment, setEnvironment] = useState<"live" | "testing">("live");
-
   const [isLoading, setIsLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
+  const [titleError, setTitleError] = useState("");
+  const [queue, setQueue] = useState<QueueItem[]>([]);
+  const [showRemoveDialog, setShowRemoveDialog] = useState(false);
+  const [removeIndex, setRemoveIndex] = useState(-1);
+  const [showPushDialog, setShowPushDialog] = useState(false);
+
+  useEffect(() => {
+    document.title = "Announcement Tool";
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchFiles();
+      setDefaultVersion();
+    }
+  }, [isAuthenticated, environment]);
 
   const updateLoadingState = (
     isLoading: boolean,
@@ -62,17 +94,6 @@ export default function AutoPost() {
     setStatusMessage(message);
     setProgress(progress);
   };
-
-  useEffect(() => {
-    document.title = "AoTTG 2 Announcement Tool";
-  }, []);
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      fetchFiles();
-      setDefaultVersion();
-    }
-  }, [isAuthenticated, environment]);
 
   const handleAuth = () => {
     if (authPassword === process.env.NEXT_PUBLIC_AUTH_PASSWORD) {
@@ -126,48 +147,51 @@ export default function AutoPost() {
     }
   };
 
-  const handleAnnouncementSubmit = async () => {
+  const handleAnnouncementSubmit = () => {
     if (!announcementTitle || !announcementContent) {
       alert("Please enter both title and content");
       return;
     }
 
     const path = environment === "live" ? "posts" : "test-posts";
+    const sanitizedTitle = sanitizeFileName(announcementTitle);
+    const fileName = `${sanitizedTitle}.md`;
 
-    try {
-      updateLoadingState(true, "Preparing announcement submission...", 0);
-
-      updateLoadingState(true, "Submitting announcement...", 50);
-      await octokit.rest.repos.createOrUpdateFileContents({
-        owner: process.env.NEXT_PUBLIC_GITHUB_ORG!,
-        repo: process.env.NEXT_PUBLIC_GITHUB_REPO!,
-        path: `${path}/${announcementTitle}.md`,
-        message: `Add ${announcementTitle}.md`,
-        content: Buffer.from(announcementContent).toString("base64"),
-      });
-
-      updateLoadingState(true, "Fetching updated file list...", 75);
-      await fetchFiles();
-
-      updateLoadingState(true, "Announcement submitted successfully!", 100);
-      setTimeout(() => updateLoadingState(false, "", 0), 1000);
-
-      setAnnouncementTitle("");
-      setAnnouncementContent("");
-    } catch (error) {
-      console.error("Error submitting announcement:", error);
-      updateLoadingState(
-        true,
-        "Error submitting announcement. Please try again.",
-        100
+    if (files.includes(`${path}/${fileName}`)) {
+      setTitleError(
+        "A file with this name already exists. Please choose a different title or delete the existing file."
       );
-      setTimeout(() => updateLoadingState(false, "", 0), 2000);
+      return;
     }
+
+    setQueue([
+      ...queue,
+      {
+        type: "new",
+        path: `${path}/${fileName}`,
+        content: announcementContent,
+      },
+    ]);
+
+    setAnnouncementTitle("");
+    setAnnouncementContent("");
+    setTitleError("");
   };
 
-  const handleChangelogSubmit = async () => {
+  const handleChangelogSubmit = () => {
     if (!changelogVersion) {
       alert("Please enter a version number");
+      return;
+    }
+
+    const path = environment === "live" ? "changelog" : "test-changelog";
+    const sanitizedVersion = sanitizeFileName(changelogVersion);
+    const fileName = `${sanitizedVersion}.md`;
+
+    if (files.includes(`${path}/${fileName}`)) {
+      setTitleError(
+        "A file with this version already exists. Please choose a different version or delete the existing file."
+      );
       return;
     }
 
@@ -182,39 +206,135 @@ ${formattedBugfixes}
 
 ${changelogDescription}`;
 
-    const path = environment === "live" ? "changelog" : "test-changelog";
+    setQueue([
+      ...queue,
+      {
+        type: "new",
+        path: `${path}/${fileName}`,
+        content: changelogContent,
+      },
+    ]);
+
+    setChangelogFeatures("");
+    setChangelogBugfixes("");
+    setChangelogDescription("");
+    setDefaultVersion();
+    setTitleError("");
+  };
+
+  const handleDeleteFile = (filePath: string) => {
+    setQueue([...queue, { type: "delete", path: filePath }]);
+    setFiles(files.filter((file) => file !== filePath));
+  };
+
+  const handleRemoveFromQueue = (index: number) => {
+    setRemoveIndex(index);
+    setShowRemoveDialog(true);
+  };
+
+  const confirmRemoveFromQueue = () => {
+    const removedItem = queue[removeIndex];
+    if (removedItem.type === "delete") {
+      setFiles([...files, removedItem.path]);
+    }
+    setQueue(queue.filter((_, i) => i !== removeIndex));
+    setShowRemoveDialog(false);
+  };
+
+  const handlePushAll = async () => {
+    if (queue.length === 0) {
+      alert("Queue is empty. Nothing to push.");
+      return;
+    }
+
+    setShowPushDialog(true);
+  };
+
+  const confirmPushAll = async () => {
+    setShowPushDialog(false);
+    updateLoadingState(true, "Preparing to push changes...", 0);
 
     try {
-      updateLoadingState(true, "Preparing changelog submission...", 0);
+      const timestamp = new Date().toISOString();
+      const commitMessage = `Update (${timestamp})\n\n${queue
+        .map(
+          (item) =>
+            `- ${item.type === "new" ? "Add" : "Delete"} ${item.path
+              .split("/")
+              .pop()}`
+        )
+        .join("\n")}`;
 
-      updateLoadingState(true, "Submitting changelog...", 50);
-      await octokit.rest.repos.createOrUpdateFileContents({
+      const tree = [];
+      for (let i = 0; i < queue.length; i++) {
+        const item = queue[i];
+        updateLoadingState(
+          true,
+          `Processing item ${i + 1} of ${queue.length}...`,
+          (i / queue.length) * 100
+        );
+
+        if (item.type === "new") {
+          tree.push({
+            path: item.path,
+            mode: "100644",
+            type: "blob",
+            content: item.content,
+          });
+        } else if (item.type === "delete") {
+          tree.push({
+            path: item.path,
+            mode: "100644",
+            type: "blob",
+            sha: null,
+          });
+        }
+      }
+
+      const currentCommit = await octokit.rest.repos.getCommit({
         owner: process.env.NEXT_PUBLIC_GITHUB_ORG!,
         repo: process.env.NEXT_PUBLIC_GITHUB_REPO!,
-        path: `${path}/${changelogVersion}.md`,
-        message: `Add changelog for version ${changelogVersion}`,
-        content: Buffer.from(changelogContent).toString("base64"),
+        ref: "main",
       });
 
-      updateLoadingState(true, "Fetching updated file list...", 75);
+      const newTree = await octokit.rest.git.createTree({
+        owner: process.env.NEXT_PUBLIC_GITHUB_ORG!,
+        repo: process.env.NEXT_PUBLIC_GITHUB_REPO!,
+        base_tree: currentCommit.data.commit.tree.sha,
+        tree: tree,
+      });
+
+      const newCommit = await octokit.rest.git.createCommit({
+        owner: process.env.NEXT_PUBLIC_GITHUB_ORG!,
+        repo: process.env.NEXT_PUBLIC_GITHUB_REPO!,
+        message: commitMessage,
+        tree: newTree.data.sha,
+        parents: [currentCommit.data.sha],
+      });
+
+      await octokit.rest.git.updateRef({
+        owner: process.env.NEXT_PUBLIC_GITHUB_ORG!,
+        repo: process.env.NEXT_PUBLIC_GITHUB_REPO!,
+        ref: "heads/main",
+        sha: newCommit.data.sha,
+      });
+
+      updateLoadingState(true, "Fetching updated file list...", 90);
       await fetchFiles();
 
-      updateLoadingState(true, "Changelog submitted successfully!", 100);
+      updateLoadingState(true, "All changes pushed successfully!", 100);
       setTimeout(() => updateLoadingState(false, "", 0), 1000);
 
-      setChangelogFeatures("");
-      setChangelogBugfixes("");
-      setChangelogDescription("");
-      setDefaultVersion();
+      setQueue([]);
     } catch (error) {
-      console.error("Error submitting changelog:", error);
-      updateLoadingState(
-        true,
-        "Error submitting changelog. Please try again.",
-        100
-      );
+      console.error("Error pushing changes:", error);
+      updateLoadingState(true, "Error pushing changes. Please try again.", 100);
       setTimeout(() => updateLoadingState(false, "", 0), 2000);
     }
+  };
+
+  const handleTabChange = () => {
+    setTitleError("");
   };
 
   if (!isAuthenticated) {
@@ -239,100 +359,174 @@ ${changelogDescription}`;
   }
 
   return (
-    <div className="container mx-auto p-4">
-      <h1 className="text-2xl font-bold mb-4">
-        AoTTG 2 - announcement and changelog tool
-      </h1>
+    <div className="container mx-auto p-4 flex">
+      <div className="mr-4">
+        <h2 className="text-xl font-semibold mb-4">
+          Existing Files ({environment})
+        </h2>
+        <ScrollArea className="h-[calc(100vh-200px)]">
+          <ul className="space-y-2">
+            {files.map((file, index) => (
+              <li
+                key={index}
+                className="flex items-center justify-between p-2 rounded border-gray-700 border"
+              >
+                <span className="text-sm truncate">{file}</span>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => handleDeleteFile(file)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </ScrollArea>
+      </div>
 
-      <Tabs
-        value={environment}
-        onValueChange={(value) => setEnvironment(value as "live" | "testing")}
-        className="mb-4"
-      >
-        <TabsList>
-          <TabsTrigger value="live">Live</TabsTrigger>
-          <TabsTrigger value="testing">Testing</TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="flex-grow mx-4">
+        <h1 className="text-2xl font-bold mb-4">
+          AoTTG 2 - announcement and changelog tool
+        </h1>
 
-      <Tabs defaultValue="announcement" className="w-full">
-        <TabsList>
-          <TabsTrigger value="announcement">Announcement</TabsTrigger>
-          <TabsTrigger value="changelog">Changelog</TabsTrigger>
-        </TabsList>
-        <TabsContent value="announcement">
-          <div className="mb-4">
-            <Input
-              type="text"
-              placeholder="Enter announcement title"
-              value={announcementTitle}
-              onChange={(e) => setAnnouncementTitle(e.target.value)}
-              className="mb-2"
-            />
-            <MDEditor
-              value={announcementContent}
-              onChange={(value) => setAnnouncementContent(value || "")}
-              height={400}
-            />
-          </div>
-          <Button onClick={handleAnnouncementSubmit}>
-            Submit Announcement
-          </Button>
-        </TabsContent>
-        <TabsContent value="changelog">
-          <div className="mb-4 space-y-2">
-            <Input
-              type="text"
-              placeholder="Version"
-              value={changelogVersion}
-              onChange={(e) => setChangelogVersion(e.target.value)}
-            />
-            <Textarea
-              placeholder="Features (one per line, starting with -)"
-              value={changelogFeatures}
-              onChange={(e) => setChangelogFeatures(e.target.value)}
-              rows={5}
-            />
-            <Textarea
-              placeholder="Bugfixes (one per line, starting with -)"
-              value={changelogBugfixes}
-              onChange={(e) => setChangelogBugfixes(e.target.value)}
-              rows={5}
-            />
-            <Textarea
-              placeholder="Additional description (optional)"
-              value={changelogDescription}
-              onChange={(e) => setChangelogDescription(e.target.value)}
-              rows={3}
-            />
-          </div>
-          <Button onClick={handleChangelogSubmit}>Submit Changelog</Button>
-          <div className="mt-4">
-            <h3 className="text-lg font-semibold mb-2">Changelog Preview</h3>
-            <div className="border p-4 bg-[#0d1117] rounded">
-              <MarkdownPreview
-                source={`## Version ${changelogVersion}
+        <Tabs
+          value={environment}
+          onValueChange={(value) => {
+            setEnvironment(value as "live" | "testing");
+            handleTabChange();
+          }}
+          className="mb-4"
+        >
+          <TabsList>
+            <TabsTrigger value="live">Live</TabsTrigger>
+            <TabsTrigger value="testing">Testing</TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <Tabs
+          defaultValue="announcement"
+          className="w-full"
+          onValueChange={handleTabChange}
+        >
+          <TabsList>
+            <TabsTrigger value="announcement">Announcement</TabsTrigger>
+            <TabsTrigger value="changelog">Changelog</TabsTrigger>
+          </TabsList>
+          <TabsContent value="announcement">
+            <div className="mb-4">
+              <Input
+                type="text"
+                placeholder="Enter announcement title"
+                value={announcementTitle}
+                onChange={(e) => setAnnouncementTitle(e.target.value)}
+                className="mb-2"
+              />
+              <MDEditor
+                value={announcementContent}
+                onChange={(value) => setAnnouncementContent(value || "")}
+                height={400}
+              />
+            </div>
+            {titleError && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertTitle>Error</AlertTitle>
+                <AlertDescription>{titleError}</AlertDescription>
+              </Alert>
+            )}
+            <Button onClick={handleAnnouncementSubmit}>
+              Add Announcement to Queue
+            </Button>
+          </TabsContent>
+          <TabsContent value="changelog">
+            <div className="mb-4 space-y-2">
+              <Input
+                type="text"
+                placeholder="Version"
+                value={changelogVersion}
+                onChange={(e) => setChangelogVersion(e.target.value)}
+              />
+              <Textarea
+                placeholder="Features (one per line, starting with -)"
+                value={changelogFeatures}
+                onChange={(e) => setChangelogFeatures(e.target.value)}
+                rows={5}
+              />
+              <Textarea
+                placeholder="Bugfixes (one per line, starting with -)"
+                value={changelogBugfixes}
+                onChange={(e) => setChangelogBugfixes(e.target.value)}
+                rows={5}
+              />
+              <Textarea
+                placeholder="Additional description (optional)"
+                value={changelogDescription}
+                onChange={(e) => setChangelogDescription(e.target.value)}
+                rows={3}
+              />
+            </div>
+            {titleError && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertTitle>Error</AlertTitle>
+                <AlertDescription>{titleError}</AlertDescription>
+              </Alert>
+            )}
+            <Button onClick={handleChangelogSubmit}>
+              Add Changelog to Queue
+            </Button>
+            <div className="mt-4">
+              <h3 className="text-lg font-semibold mb-2">Changelog Preview</h3>
+              <div className="border border-gray-700 p-4 rounded bg-[#0d1117]">
+                <MarkdownPreview
+                  source={`## Version ${changelogVersion}
 ### Features
 ${formatTextAreaContent(changelogFeatures)}
 ### Bugfixes
 ${formatTextAreaContent(changelogBugfixes)}
 
 ${changelogDescription}`}
-              />
+                />
+              </div>
             </div>
-          </div>
-        </TabsContent>
-      </Tabs>
+          </TabsContent>
+        </Tabs>
+      </div>
 
-      <div className="mt-8">
-        <h2 className="text-xl font-semibold mb-2">
-          Existing Files ({environment})
-        </h2>
-        <ul className="list-disc pl-5">
-          {files.map((file, index) => (
-            <li key={index}>{file}</li>
+      <div className="w-64">
+        <h2 className="text-xl font-semibold mb-4">Queue</h2>
+        <ScrollArea className="h-[calc(100vh-200px)] pr-4">
+          {queue.map((item, index) => (
+            <div
+              key={index}
+              className="mb-2 border border-gray-700 p-2 rounded shadow flex justify-between items-center"
+            >
+              <div>
+                <span
+                  className={
+                    item.type === "new" ? "text-green-600" : "text-red-600"
+                  }
+                >
+                  {item.type === "new" ? (
+                    <Plus className="inline-block mr-1 h-4 w-4" />
+                  ) : (
+                    <Trash2 className="inline-block mr-1 h-4 w-4" />
+                  )}
+                </span>
+                <span className="text-sm">{item.path}</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => handleRemoveFromQueue(index)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
           ))}
-        </ul>
+        </ScrollArea>
+        <Button onClick={handlePushAll} className="w-full mt-4">
+          Push All Changes
+        </Button>
       </div>
 
       <Dialog open={isLoading} onOpenChange={setIsLoading}>
@@ -344,6 +538,44 @@ ${changelogDescription}`}
           <div className="py-4">
             <Progress value={progress} className="w-full" />
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showRemoveDialog} onOpenChange={setShowRemoveDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Removal</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to remove this item from the queue?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowRemoveDialog(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={confirmRemoveFromQueue}>Confirm</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showPushDialog} onOpenChange={setShowPushDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Push</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to push all changes? This action cannot be
+              undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPushDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmPushAll}>Confirm</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
